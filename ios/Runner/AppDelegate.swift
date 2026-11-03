@@ -12,11 +12,12 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    let messenger = engineBridge.engine.binaryMessenger
+    
     let channel = FlutterMethodChannel(
       name: "io.github.caolib.kira/app_icon",
-      binaryMessenger: messenger
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
+    
     channel.setMethodCallHandler { (call, result) in
       switch call.method {
       case "setAppIcon":
