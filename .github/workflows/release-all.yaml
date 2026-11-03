@@ -255,10 +255,47 @@ jobs:
         with:
           name: linux
           path: dist/kira-*.tar.gz
+  build-ios:
+    name: Build iOS IPA (Sideload)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
 
+      - name: Set up Flutter and locked dependencies
+        uses: ./.github/actions/setup-flutter
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Build iOS (No Codesign)
+        run: |
+          flutter build ios --release --no-codesign \
+            --dart-define=COPY_AUTH_KEY=${{ secrets.COPY_AUTH_KEY }}
+
+      - name: Package to IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          OUT="kira-${RELEASE_TAG}-ios-unsigned.ipa"
+          zip -r -q "$OUT" Payload
+          rm -rf Payload
+          ls -lh "$OUT"
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-ipa
+          path: build/ios/ipa/kira-*.ipa
+          
   release:
     name: Create Release
-    needs: [build-android, build-windows, build-macos, build-linux]
+    needs: [build-android, build-windows, build-macos, build-linux, build-ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
