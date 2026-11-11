@@ -1,4 +1,2 @@
-# 让 Runner Debug 配置继承 CocoaPods 生成的 Pods-Runner.debug.xcconfig。
-# `#include?` 是可选包含：没有 Pods 时（例如纯 Dart 调试）也不会报错。
 #include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
 #include "Generated.xcconfig"
