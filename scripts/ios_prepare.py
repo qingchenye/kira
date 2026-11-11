@@ -244,6 +244,37 @@ def patch_display_mode():
     )
 
 
+APP_DELEGATE_OLD = """    let messenger = engineBridge.engine.binaryMessenger
+    let channel = FlutterMethodChannel(
+      name: "io.github.caolib.kira/app_icon",
+      binaryMessenger: messenger
+    )"""
+
+APP_DELEGATE_NEW = """    guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "KiraAppIcon") else {
+      return
+    }
+    let channel = FlutterMethodChannel(
+      name: "io.github.caolib.kira/app_icon",
+      binaryMessenger: registrar.messenger()
+    )"""
+
+
+def patch_app_delegate():
+    """Flutter 3.44 的 FlutterImplicitEngineBridge 已没有 .engine 成员。"""
+    path = ROOT / "ios" / "Runner" / "AppDelegate.swift"
+    if not path.exists():
+        warn("ios/Runner/AppDelegate.swift not found, skip")
+        return
+    text = path.read_text(encoding="utf-8")
+    if "registrar.messenger()" in text:
+        return
+    if APP_DELEGATE_OLD not in text:
+        warn("AppDelegate.swift: expected messenger pattern not found, skip")
+        return
+    path.write_text(text.replace(APP_DELEGATE_OLD, APP_DELEGATE_NEW), encoding="utf-8", newline="\n")
+    info("patched ios/Runner/AppDelegate.swift")
+
+
 def main():
     if not (ROOT / "pubspec.yaml").exists():
         sys.exit("not a kira checkout: %s" % ROOT)
@@ -256,6 +287,7 @@ def main():
     patch_app_update()
     patch_reader()
     patch_display_mode()
+    patch_app_delegate()
     info("iOS bootstrap done (target iOS %s, update repo %s)" % (TARGET, DEFAULT_REPO))
 
 
