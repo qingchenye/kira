@@ -160,10 +160,27 @@ class AppUpdateState {
 enum AppUpdateStatus { idle, checking, available, latest, failed }
 
 class AppUpdateService {
-  static const _latestReleaseUrl =
-      'https://api.github.com/repos/caolib/kira/releases/latest';
-  static const _ciReleaseUrl =
-      'https://api.github.com/repos/caolib/kira/releases/tags/CI';
+  /// Release repo (owner/name) used by the in-app update check. Defaults to
+  /// this repo; override at build time with
+  /// `--dart-define=UPDATE_REPO=owner/repo`.
+  static const _updateRepo = String.fromEnvironment(
+    'UPDATE_REPO',
+    defaultValue: 'qingchenye/kira',
+  );
+
+  /// GitHub API root. Override with
+  /// `--dart-define=UPDATE_API_ROOT=https://api.example.com` when hosting a
+  /// GitHub-compatible API.
+  static const _updateApiRoot = String.fromEnvironment(
+    'UPDATE_API_ROOT',
+    defaultValue: 'https://api.github.com',
+  );
+
+  static String get _latestReleaseUrl =>
+      '$_updateApiRoot/repos/$_updateRepo/releases/latest';
+  static String get _ciReleaseUrl =>
+      '$_updateApiRoot/repos/$_updateRepo/releases/tags/CI';
+
   static final Dio _dio = AppDio.create(
     source: 'app_update',
     options: BaseOptions(

@@ -44,6 +44,7 @@ class DisplayModePreference {
   }
 
   static Future<List<int>> loadRefreshRates() async {
+    if (!isSupportedPlatform) return _candidateRefreshRates.toList();
     final deviceRates = await loadDeviceRefreshRates();
     if (deviceRates != null) return refreshRates(deviceRates);
     // Older builds or a failed native read: fall back to the plugin's mode
@@ -53,6 +54,7 @@ class DisplayModePreference {
   }
 
   static Future<int?> activeRefreshRate() async {
+    if (!isSupportedPlatform) return null;
     final rate = (await FlutterDisplayMode.active).refreshRate;
     if (!rate.isFinite || rate <= 0) return null;
     final rounded = rate.round();

@@ -1,0 +1,210 @@
+name: Build iOS IPA (unsigned)
+
+# 需要往仓库里加 2 个文件：
+#   .github/workflows/release-ios.yaml   (本文件)
+#   scripts/ios_prepare.py               (构建前幂等补齐 iOS 工程)
+# 推送到 main/master 后自动构建；产物发布到预发布 Release `ios`，手机直接下载：
+#   https://github.com/<owner>/<repo>/releases/download/ios/kira-ios-unsigned.ipa
+#
+# scripts/ios_prepare.py 会在 runner 上自动处理：缺 Podfile、xcconfig 未接 Pods、
+# Info.plist 缺相册/ATS、IPHONEOS_DEPLOYMENT_TARGET 过低、更新源写死、gal 相册权限、
+# display_mode 平台守卫。仓库源码不需要改。
+#
+# 需要仓库 secret：COPY_AUTH_KEY（拷贝漫画 App 通道签名密钥）。
+# 可选仓库变量：UPDATE_REPO（更新检查仓库，默认当前仓库）、UPDATE_API_ROOT。
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'lib/**'
+      - 'ios/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'scripts/ios_prepare.py'
+      - '.github/workflows/release-ios.yaml'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "可选：同时把 ipa 上传到该 Release（如 v1.7.6；用于应用内更新）"
+        required: false
+        default: ""
+      copy_auth_key:
+        description: "可选：临时覆盖 COPY_AUTH_KEY（默认读 secret）"
+        required: false
+        default: ""
+      deployment_target:
+        description: "可选：覆盖 iOS 最低版本（默认 16.0）"
+        required: false
+        default: ""
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IOS_RELEASE_TAG: ios
+  IOS_ASSET_NAME: kira-ios-unsigned.ipa
+
+jobs:
+  build-ios:
+    name: Build iOS IPA (macOS)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Flutter and locked dependencies
+        uses: ./.github/actions/setup-flutter
+
+      - name: Ensure CocoaPods
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pod >/dev/null 2>&1; then
+            brew install cocoapods
+          fi
+          pod --version
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter --version
+          xcodebuild -version
+          grep -n 'IPHONEOS_DEPLOYMENT_TARGET' ios/Runner.xcodeproj/project.pbxproj || true
+          grep -n '^platform' ios/Podfile || true
+
+      - name: Prepare iOS project (idempotent)
+        shell: bash
+        env:
+          DEPLOYMENT_TARGET: ${{ github.event.inputs.deployment_target != '' && github.event.inputs.deployment_target || '16.0' }}
+          UPDATE_REPO: ${{ vars.UPDATE_REPO || github.repository }}
+        run: |
+          set -euo pipefail
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 not found on runner"
+            exit 1
+          fi
+          if [ ! -f scripts/ios_prepare.py ]; then
+            echo "::error::scripts/ios_prepare.py 不存在：请先把它和本工作流一起加进仓库"
+            exit 1
+          fi
+          python3 scripts/ios_prepare.py
+          grep -n 'IPHONEOS_DEPLOYMENT_TARGET' ios/Runner.xcodeproj/project.pbxproj
+          grep -n '^platform' ios/Podfile
+          grep -n 'Pods-Runner' ios/Flutter/Debug.xcconfig ios/Flutter/Release.xcconfig
+
+      - name: Build iOS (no codesign)
+        shell: bash
+        env:
+          COPY_AUTH_KEY: ${{ github.event.inputs.copy_auth_key != '' && github.event.inputs.copy_auth_key || secrets.COPY_AUTH_KEY }}
+          UPDATE_REPO: ${{ vars.UPDATE_REPO || github.repository }}
+          UPDATE_API_ROOT: ${{ vars.UPDATE_API_ROOT }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f ios/Podfile ]; then
+            echo "::error::ios/Podfile 不存在：iOS 工程没接 CocoaPods，装到手机上会全是 MissingPluginException"
+            exit 1
+          fi
+          if ! grep -q 'Pods/Target Support Files' ios/Flutter/Release.xcconfig; then
+            echo "::error::ios/Flutter/Release.xcconfig 未接入 Pods xcconfig"
+            exit 1
+          fi
+          if [ -z "${COPY_AUTH_KEY:-}" ]; then
+            echo "::warning::COPY_AUTH_KEY 为空：App 能装，但拷贝漫画通道签名会失败"
+          fi
+
+          args=(--release --no-codesign)
+          args+=("--dart-define=COPY_AUTH_KEY=${COPY_AUTH_KEY:-}")
+          args+=("--dart-define=UPDATE_REPO=${UPDATE_REPO:-${GITHUB_REPOSITORY}}")
+          if [ -n "${UPDATE_API_ROOT:-}" ]; then
+            args+=("--dart-define=UPDATE_API_ROOT=${UPDATE_API_ROOT}")
+          fi
+
+          set -o pipefail
+          flutter build ios "${args[@]}" 2>&1 | tee /tmp/flutter_ios_build.log
+
+          test -d build/ios/iphoneos/Runner.app
+          test -s ios/Podfile.lock || { echo "::error::pod install 未执行（ios/Podfile.lock 缺失）"; exit 1; }
+          grep -qi 'inappwebview' ios/Podfile.lock || {
+            echo "::error::Podfile.lock 中没有 flutter_inappwebview，插件没有被链接"
+            exit 1
+          }
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
+          VERSION="${VERSION%%+*}"
+          test -n "$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          rm -rf build/ios/ipa
+          mkdir -p build/ios/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          (
+            cd build/ios/ipa
+            zip -qry "kira-${VERSION}-ios-unsigned.ipa" Payload
+          )
+          cp "build/ios/ipa/kira-${VERSION}-ios-unsigned.ipa" "build/ios/ipa/${IOS_ASSET_NAME}"
+          test -s "build/ios/ipa/${IOS_ASSET_NAME}"
+
+          plutil -lint build/ios/ipa/Payload/Runner.app/Info.plist
+          for key in NSPhotoLibraryAddUsageDescription NSPhotoLibraryUsageDescription; do
+            plutil -extract "$key" raw build/ios/ipa/Payload/Runner.app/Info.plist >/dev/null
+          done
+          lipo -info build/ios/ipa/Payload/Runner.app/Runner
+          ls -lh build/ios/ipa/*.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: kira-ios-ipa
+          path: build/ios/ipa/*.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish unsigned IPA
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ASSET="build/ios/ipa/${IOS_ASSET_NAME}"
+          VERSION="${APP_VERSION:-unknown}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${IOS_RELEASE_TAG}/${IOS_ASSET_NAME}"
+          TITLE="iOS build ${VERSION} (${GITHUB_SHA::7})"
+          NOTES="未签名 iOS IPA（自签侧载）。版本 ${VERSION}，提交 ${GITHUB_SHA}。"
+
+          if gh release view "$IOS_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$IOS_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --notes "$NOTES" --prerelease
+            gh release upload "$IOS_RELEASE_TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$IOS_RELEASE_TAG" "$ASSET" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+
+          if [ -n "${TAG_NAME:-}" ]; then
+            gh release upload "$TAG_NAME" "build/ios/ipa/kira-${VERSION}-ios-unsigned.ipa" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+
+          {
+            echo "## 📱 iOS 未签名 IPA"
+            echo ""
+            echo "- 手机直接下载：${URL}"
+            echo "- 版本：${VERSION}"
+            echo "- 提交：\`${GITHUB_SHA}\`"
+            echo ""
+            echo "下载后丢进 ESign / Feather / Scarlet 等签名工具自签安装即可。"
+          } >> "$GITHUB_STEP_SUMMARY"
