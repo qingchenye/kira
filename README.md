@@ -18,6 +18,7 @@
 ## 简介
 
 一个拷贝漫画、热辣漫画的第三方客户端，支持漫画、轻小说
+增加了IOS自签侧载
 
 [![](https://files.seeusercontent.com/2026/11/06/bGa0/20261106180342267.png)](https://kirakira.dpdns.org/)
 
